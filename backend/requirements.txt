@@ -1,0 +1,19 @@
+# 數據處理
+pandas==2.1.3
+numpy==1.26.2
+
+# 加密貨幣交易所 API
+ccxt==4.0.28
+
+# 機器學習
+scikit-learn==1.3.2
+joblib==1.3.2
+
+# 模型下載
+huggingface-hub==0.19.4
+
+# 環境變數管理
+python-dotenv==1.0.0
+
+# 日誌和監控
+requests==2.31.0
