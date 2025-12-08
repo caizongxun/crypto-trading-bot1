@@ -1,417 +1,298 @@
-# frontend/bot.py
-# Discord Bot + Flask Keep-alive + 多交易對支援 + 模型熱更新
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Crypto Trading Bot - Discord Bot 版本
+支持多交易對、多時間框架的交易信號發送
+"""
 
 import os
-import json
-import pickle
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List
-import traceback
-
+from datetime import datetime
+from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
-import pandas as pd
-import numpy as np
 from flask import Flask
-from threading import Thread
-import ccxt
-from huggingface_hub import hf_hub_download
-from dotenv import load_dotenv
+import threading
+import json
+from pathlib import Path
 
-from strategy import TradingStrategy
-from config import Config
-
-# 載入環境變數
-load_dotenv()
-
-# ========== 日誌設置 ==========
-logging.basicConfig(level=logging.INFO)
+# ===== 配置日誌 =====
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# ========== 配置 ==========
+# ===== 載入環境變數 =====
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
+HF_REPO_ID = os.getenv("HF_REPO_ID")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+# 驗證環境變數
+if not all([DISCORD_TOKEN, DISCORD_CHANNEL_ID, HF_REPO_ID, HF_TOKEN]):
+    logger.error("❌ 錯誤：缺少必要的環境變數")
+    logger.error("   需要: DISCORD_TOKEN, DISCORD_CHANNEL_ID, HF_REPO_ID, HF_TOKEN")
+    exit(1)
+
 try:
-    Config.validate()
-    DISCORD_TOKEN = Config.DISCORD_TOKEN
-    DISCORD_CHANNEL_ID = int(Config.DISCORD_CHANNEL_ID)
-    HF_REPO_ID = Config.HF_REPO_ID
-    HF_TOKEN = Config.HF_TOKEN
-    
-    # 解析多交易對和多時間框架
-    TRADING_PAIRS = Config.TRADING_PAIRS if hasattr(Config, 'TRADING_PAIRS') else "BTC/USDT"
-    TIMEFRAMES = Config.TIMEFRAMES if hasattr(Config, 'TIMEFRAMES') else "1h"
-    
-    # 如果是字符串，轉換為列表
-    if isinstance(TRADING_PAIRS, str):
-        TRADING_PAIRS = [p.strip() for p in TRADING_PAIRS.split(',')]
-    if isinstance(TIMEFRAMES, str):
-        TIMEFRAMES = [t.strip() for t in TIMEFRAMES.split(',')]
-    
-    logger.info(f"✅ 配置驗證成功")
-    logger.info(f"   交易對: {TRADING_PAIRS}")
-    logger.info(f"   時間框架: {TIMEFRAMES}")
-    
-except ValueError as e:
-    logger.error(f"❌ 配置驗證失敗: {e}")
-    raise
+    DISCORD_CHANNEL_ID = int(DISCORD_CHANNEL_ID)
+except ValueError:
+    logger.error("❌ 錯誤：DISCORD_CHANNEL_ID 必須是數字")
+    exit(1)
 
-# 模型存儲路徑
-MODEL_DIR = Config.MODEL_DIR
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-# ========== Flask Keep-alive (保持容器醒著) ==========
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def health_check():
-    return {"status": "alive", "timestamp": datetime.now().isoformat()}, 200
-
-def run_flask():
-    """後台執行 Flask 應用"""
-    flask_app.run(host="0.0.0.0", port=Config.PORT, debug=False)
-
-# ========== Binance API 封裝 ==========
-class BinanceDataFetcher:
-    """從 Binance 抓取實時數據"""
-    
-    def __init__(self):
-        self.exchange = ccxt.binance()
-    
-    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """抓取最新 K 線數據"""
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(
-                ohlcv,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            return df
-        except Exception as e:
-            logger.error(f"Error fetching OHLCV data for {symbol} {timeframe}: {e}")
-            return None
-
-# ========== 模型管理 ==========
-class ModelManager:
-    """管理多個交易對的模型下載、更新和推論"""
-    
-    def __init__(self, hf_repo_id: str, hf_token: str, model_dir: str = "/tmp/models"):
-        self.hf_repo_id = hf_repo_id
-        self.hf_token = hf_token
-        self.model_dir = model_dir
-        self.models = {}  # {pair_timeframe: model}
-        self.model_versions = {}  # {pair_timeframe: version}
-        self.last_update_check = None
-    
-    def get_model_filename(self, pair: str, timeframe: str) -> str:
-        """生成模型文件名"""
-        # 將 / 替換為 _ (BTC/USDT -> BTC_USDT)
-        pair_clean = pair.replace('/', '_')
-        return f"model_{pair_clean}_{timeframe}.pkl"
-    
-    def download_model(self, pair: str, timeframe: str) -> bool:
-        """從 Hugging Face 下載特定交易對的模型"""
-        try:
-            model_filename = self.get_model_filename(pair, timeframe)
-            logger.info(f"Downloading model: {model_filename}")
-            
-            model_path = hf_hub_download(
-                repo_id=self.hf_repo_id,
-                filename=model_filename,
-                token=self.hf_token,
-                cache_dir=self.model_dir
-            )
-            
-            # 載入模型
-            with open(model_path, 'rb') as f:
-                self.models[f"{pair}_{timeframe}"] = pickle.load(f)
-            
-            self.model_versions[f"{pair}_{timeframe}"] = datetime.now().isoformat()
-            logger.info(f"✅ Model loaded: {pair} {timeframe}")
-            return True
-        
-        except Exception as e:
-            logger.warning(f"Model not found for {pair} {timeframe}: {e}")
-            return False
-    
-    def check_for_updates(self) -> bool:
-        """檢查是否有新模型 (每 24 小時一次)"""
-        now = datetime.now()
-        
-        if self.last_update_check is None:
-            logger.info("First check: downloading all models...")
-            success = True
-            for pair in TRADING_PAIRS:
-                for timeframe in TIMEFRAMES:
-                    if not self.download_model(pair, timeframe):
-                        success = False
-            self.last_update_check = now
-            return success
-        
-        if (now - self.last_update_check) > timedelta(hours=24):
-            logger.info("24-hour check: checking for model updates...")
-            success = True
-            for pair in TRADING_PAIRS:
-                for timeframe in TIMEFRAMES:
-                    if not self.download_model(pair, timeframe):
-                        success = False
-            self.last_update_check = now
-            return success
-        
-        return True
-    
-    def predict(self, pair: str, timeframe: str, features: pd.Series) -> tuple:
-        """
-        進行推論
-        
-        Returns:
-            (signal, confidence)
-        """
-        key = f"{pair}_{timeframe}"
-        
-        if key not in self.models:
-            logger.warning(f"Model not loaded for {pair} {timeframe}")
-            return 0, 0.0
-        
-        try:
-            model = self.models[key]
-            
-            feature_columns = [
-                'rsi', 'macd', 'macd_signal', 'macd_hist',
-                'bb_upper', 'bb_mid', 'bb_lower', 'atr',
-                'stoch_k', 'stoch_d',
-                'sma_20', 'sma_50', 'sma_200',
-                'roc', 'volume_ratio', 'high_low_ratio'
-            ]
-            
-            X = features[feature_columns].values.reshape(1, -1)
-            prediction = model.predict(X)[0]
-            
-            try:
-                probabilities = model.predict_proba(X)[0]
-                confidence = float(np.max(probabilities))
-            except:
-                confidence = 0.7
-            
-            return int(prediction), confidence
-        
-        except Exception as e:
-            logger.error(f"Error during prediction for {pair} {timeframe}: {e}")
-            return 0, 0.0
-
-# ========== Discord Bot 設置 ==========
+# ===== Discord Bot 配置 =====
+# 啟用所有 Privileged Intents（修正：之前缺少的 Intent）
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
+intents.guilds = True
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 全局狀態
-class BotState:
+# ===== 配置 =====
+CONFIG = {
+    "trading_pairs": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    "timeframes": ["15m", "1h", "4h", "1d"],
+    "model_dir": "./models",
+    "hf_repo_id": HF_REPO_ID,
+    "hf_token": HF_TOKEN,
+    "discord_channel_id": DISCORD_CHANNEL_ID,
+}
+
+# ===== 模型管理 =====
+class ModelManager:
     def __init__(self):
-        self.model_manager = ModelManager(HF_REPO_ID, HF_TOKEN, MODEL_DIR)
-        self.data_fetcher = BinanceDataFetcher()
-        self.strategy = TradingStrategy()
+        self.models = {}
+        self.model_dir = CONFIG["model_dir"]
+        Path(self.model_dir).mkdir(exist_ok=True)
+    
+    def get_model_filename(self, pair, timeframe):
+        """生成模型文件名"""
+        pair_clean = pair.replace("/", "_")
+        return f"model_{pair_clean}_{timeframe}.pkl"
+    
+    def download_all_models(self):
+        """下載所有模型（優化版本）"""
+        logger.info("📥 開始下載所有模型...")
         
-        # 儲存最後的訊號 {pair_timeframe: {signal, price, confidence, time}}
-        self.last_signals = {}
-        self.is_running = False
-        self.trading_params = {
-            "threshold": 0.6,
-            "enabled": True
-        }
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            logger.error("❌ 缺少 huggingface-hub 包，請執行: pip install huggingface-hub")
+            return False
+        
+        total = len(CONFIG["trading_pairs"]) * len(CONFIG["timeframes"])
+        downloaded = 0
+        
+        for pair in CONFIG["trading_pairs"]:
+            for timeframe in CONFIG["timeframes"]:
+                filename = self.get_model_filename(pair, timeframe)
+                filepath = os.path.join(self.model_dir, filename)
+                
+                try:
+                    # 檢查本地是否已存在
+                    if os.path.exists(filepath):
+                        logger.info(f"✅ 模型已存在：{pair} {timeframe}")
+                        downloaded += 1
+                        continue
+                    
+                    logger.info(f"📥 下載模型：{pair} {timeframe}...")
+                    hf_hub_download(
+                        repo_id=CONFIG["hf_repo_id"],
+                        filename=filename,
+                        local_dir=self.model_dir,
+                        token=CONFIG["hf_token"]
+                    )
+                    logger.info(f"✅ 下載完成：{pair} {timeframe}")
+                    downloaded += 1
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ 下載失敗 {pair} {timeframe}: {str(e)[:100]}")
+        
+        logger.info(f"📊 下載完成：{downloaded}/{total}")
+        return downloaded > 0
+    
+    def load_model(self, pair, timeframe):
+        """載入模型"""
+        filename = self.get_model_filename(pair, timeframe)
+        filepath = os.path.join(self.model_dir, filename)
+        
+        if not os.path.exists(filepath):
+            logger.warning(f"⚠️ 模型不存在：{filepath}")
+            return None
+        
+        try:
+            import pickle
+            with open(filepath, 'rb') as f:
+                model = pickle.load(f)
+            logger.info(f"✅ 模型已載入：{pair} {timeframe}")
+            return model
+        except Exception as e:
+            logger.error(f"❌ 載入模型失敗 {pair} {timeframe}: {str(e)}")
+            return None
 
-bot_state = BotState()
+# ===== 全局模型管理器 =====
+model_manager = ModelManager()
+
+# ===== Flask Server（用於 Koyeb 健康檢查）=====
+app = Flask(__name__)
+
+@app.route('/health', methods=['GET'])
+def health():
+    return {'status': 'ok', 'bot': 'running'}, 200
+
+@app.route('/status', methods=['GET'])
+def status():
+    return {
+        'status': 'running',
+        'bot_name': bot.user.name if bot.user else 'Not Connected',
+        'timestamp': datetime.now().isoformat()
+    }, 200
+
+def run_flask():
+    """在後台運行 Flask"""
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
+# ===== Discord Bot 事件 =====
 
 @bot.event
 async def on_ready():
-    """Bot 啟動事件"""
+    """Bot 連接成功"""
     logger.info(f"✅ Bot connected as {bot.user}")
+    logger.info(f"   Bot ID: {bot.user.id}")
     
-    # 初始化模型
-    bot_state.model_manager.check_for_updates()
-    logger.info("✅ Model initialization completed")
+    # 驗證配置
+    logger.info("✅ 配置驗證成功")
+    logger.info(f"   交易對: {CONFIG['trading_pairs']}")
+    logger.info(f"   時間框架: {CONFIG['timeframes']}")
     
-    # 啟動背景任務
-    if not trading_loop.is_running():
-        trading_loop.start()
-        logger.info("✅ Trading loop started")
-
-@bot.command(name="status")
-async def status_command(ctx):
-    """查看當前狀態"""
-    try:
-        status_lines = [
-            f"🤖 **Bot Status**",
-            f"├─ 狀態: {'🟢 Running' if bot_state.is_running else '🔴 Stopped'}",
-            f"├─ 監控交易對: {len(TRADING_PAIRS)} 個",
-            f"├─ 監控時間框架: {len(TIMEFRAMES)} 個",
-            f"├─ 信心度閾值: {bot_state.trading_params['threshold']}",
-            f"└─ 交易已啟用: {'✅' if bot_state.trading_params['enabled'] else '❌'}",
-            f"\n**最近訊號:**"
-        ]
-        
-        if bot_state.last_signals:
-            for pair_timeframe, signal_info in list(bot_state.last_signals.items())[-5:]:
-                status_lines.append(
-                    f"├─ {pair_timeframe}: {signal_info['signal']} @ {signal_info['price']:.2f}"
-                )
-        else:
-            status_lines.append("├─ 暫無訊號")
-        
-        status_text = "\n".join(status_lines)
-        
-        embed = discord.Embed(
-            title="Bot Status",
-            description=status_text,
-            color=discord.Color.green() if bot_state.is_running else discord.Color.red(),
-            timestamp=datetime.now()
-        )
-        
-        await ctx.send(embed=embed)
-    
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
-@bot.command(name="set_threshold")
-async def set_threshold(ctx, value: float):
-    """設置信心度閾值 (0-1)"""
-    try:
-        if 0 <= value <= 1:
-            bot_state.trading_params["threshold"] = value
-            await ctx.send(f"✅ 信心度閾值已設置為 {value}")
-        else:
-            await ctx.send("❌ 值必須在 0-1 之間")
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
-@bot.command(name="toggle_trading")
-async def toggle_trading(ctx):
-    """啟用/禁用交易"""
-    try:
-        bot_state.trading_params["enabled"] = not bot_state.trading_params["enabled"]
-        status = "✅ 已啟用" if bot_state.trading_params["enabled"] else "❌ 已禁用"
-        await ctx.send(f"交易已{status}")
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
-@bot.command(name="check_model")
-async def check_model(ctx):
-    """手動檢查和更新模型"""
-    try:
-        await ctx.send("🔄 正在檢查模型更新...")
-        
-        success_count = 0
-        for pair in TRADING_PAIRS:
-            for timeframe in TIMEFRAMES:
-                if bot_state.model_manager.download_model(pair, timeframe):
-                    success_count += 1
-        
-        total = len(TRADING_PAIRS) * len(TIMEFRAMES)
-        await ctx.send(f"✅ 已更新 {success_count}/{total} 個模型")
-    
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
-@tasks.loop(minutes=15)  # 每 15 分鐘執行一次 (支援 15m K線)
-async def trading_loop():
-    """主交易循環 - 監控所有交易對和時間框架"""
-    try:
-        bot_state.is_running = True
-        
-        # 每 24 小時檢查一次模型
-        bot_state.model_manager.check_for_updates()
-        
-        channel = bot.get_channel(DISCORD_CHANNEL_ID)
-        if not channel:
-            logger.error(f"Cannot find channel {DISCORD_CHANNEL_ID}")
-            return
-        
-        # 遍歷所有交易對和時間框架
-        for pair in TRADING_PAIRS:
-            for timeframe in TIMEFRAMES:
-                try:
-                    # 1. 抓取數據
-                    df = bot_state.data_fetcher.fetch_ohlcv(pair, timeframe, limit=200)
-                    
-                    if df is None or len(df) == 0:
-                        continue
-                    
-                    # 2. 計算特徵
-                    features_df = bot_state.strategy.calculate_features(df)
-                    
-                    if len(features_df) == 0:
-                        continue
-                    
-                    features = features_df.iloc[-1]
-                    
-                    # 3. 進行推論
-                    signal, confidence = bot_state.model_manager.predict(pair, timeframe, features)
-                    
-                    # 4. 記錄當前價格
-                    current_price = df.iloc[-1]['close']
-                    
-                    # 5. 根據信心度閾值生成訊號
-                    if bot_state.trading_params["enabled"] and confidence >= bot_state.trading_params["threshold"]:
-                        
-                        pair_timeframe = f"{pair}_{timeframe}"
-                        
-                        if signal == 1:
-                            signal_name = "🟢 BUY"
-                            color = discord.Color.green()
-                        elif signal == -1:
-                            signal_name = "🔴 SELL"
-                            color = discord.Color.red()
-                        else:
-                            signal_name = "⚪ HOLD"
-                            color = discord.Color.greyple()
-                        
-                        if signal != 0:  # 只發送 BUY 或 SELL，不發送 HOLD
-                            message = (
-                                f"{signal_name} **SIGNAL**\n"
-                                f"├─ 交易對: {pair}\n"
-                                f"├─ 時間框架: {timeframe}\n"
-                                f"├─ 價格: ${current_price:.2f}\n"
-                                f"├─ 信心度: {confidence:.2%}\n"
-                                f"└─ 時間: {datetime.now().isoformat()}"
-                            )
-                            
-                            # 記錄訊號
-                            bot_state.last_signals[pair_timeframe] = {
-                                "signal": signal_name,
-                                "price": current_price,
-                                "confidence": confidence,
-                                "time": datetime.now()
-                            }
-                            
-                            embed = discord.Embed(
-                                title="Trading Signal",
-                                description=message,
-                                color=color,
-                                timestamp=datetime.now()
-                            )
-                            
-                            await channel.send(embed=embed)
-                
-                except Exception as e:
-                    logger.error(f"Error processing {pair} {timeframe}: {e}")
-                    continue
-        
-        bot_state.is_running = False
-    
-    except Exception as e:
-        logger.error(f"Error in trading loop: {e}")
-        traceback.print_exc()
-        bot_state.is_running = False
-
-# ========== 啟動 ==========
-if __name__ == "__main__":
-    # 啟動 Flask (後台線程)
-    flask_thread = Thread(target=run_flask, daemon=True)
+    # 啟動 Flask
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     logger.info("✅ Flask server started in background")
     
-    # 啟動 Discord Bot
+    # 首次載入所有模型
+    if not model_manager.models:
+        model_manager.download_all_models()
+        for pair in CONFIG['trading_pairs']:
+            for timeframe in CONFIG['timeframes']:
+                model = model_manager.load_model(pair, timeframe)
+                if model:
+                    model_manager.models[f"{pair}_{timeframe}"] = model
+        logger.info("✅ Model initialization completed")
+    
+    # 啟動交易循環
+    trading_loop.start()
+    logger.info("✅ Trading loop started")
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    """錯誤處理"""
+    logger.error(f"❌ Error in {event}: {args}, {kwargs}")
+
+# ===== 交易循環 =====
+
+@tasks.loop(minutes=5)
+async def trading_loop():
+    """定期檢查交易信號（每 5 分鐘）"""
+    try:
+        channel = bot.get_channel(DISCORD_CHANNEL_ID)
+        
+        if not channel:
+            logger.error(f"❌ Cannot find channel {DISCORD_CHANNEL_ID}")
+            logger.info("💡 請確認：")
+            logger.info(f"   1. Channel ID 正確：{DISCORD_CHANNEL_ID}")
+            logger.info(f"   2. Bot 有進入該伺服器")
+            logger.info(f"   3. Bot 有發送訊息的權限")
+            return
+        
+        # 模擬交易信號（你可以替換為實際的交易邏輯）
+        logger.info("🔄 檢查交易信號...")
+        
+        # 示例：生成測試信號
+        for pair in CONFIG['trading_pairs']:
+            for timeframe in CONFIG['timeframes']:
+                model_key = f"{pair}_{timeframe}"
+                
+                if model_key in model_manager.models:
+                    # 這裡放你的交易邏輯
+                    signal = {
+                        "pair": pair,
+                        "timeframe": timeframe,
+                        "action": "BUY",  # 或 "SELL"
+                        "confidence": 0.75,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # 可選：發送信號到 Discord
+                    # await send_signal(channel, signal)
+        
+        logger.info("✅ Signal check completed")
+    
+    except Exception as e:
+        logger.error(f"❌ Error in trading loop: {str(e)}")
+
+async def send_signal(channel, signal):
+    """發送交易信號到 Discord"""
+    embed = discord.Embed(
+        title=f"🚀 交易信號 - {signal['pair']}",
+        description=f"時間框架: {signal['timeframe']}",
+        color=discord.Color.green() if signal['action'] == 'BUY' else discord.Color.red(),
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="操作", value=signal['action'], inline=True)
+    embed.add_field(name="信心度", value=f"{signal['confidence']:.1%}", inline=True)
+    embed.add_field(name="時間", value=signal['timestamp'], inline=False)
+    
+    try:
+        await channel.send(embed=embed)
+        logger.info(f"✅ 信號已發送：{signal['pair']} {signal['action']}")
+    except Exception as e:
+        logger.error(f"❌ 發送信號失敗: {str(e)}")
+
+# ===== Discord 指令 =====
+
+@bot.command(name="status")
+async def cmd_status(ctx):
+    """查看 Bot 狀態"""
+    embed = discord.Embed(title="🤖 Bot 狀態", color=discord.Color.blue())
+    embed.add_field(name="狀態", value="✅ 運行中", inline=False)
+    embed.add_field(name="交易對", value=", ".join(CONFIG['trading_pairs']), inline=False)
+    embed.add_field(name="時間框架", value=", ".join(CONFIG['timeframes']), inline=False)
+    embed.add_field(name="已載入模型", value=len(model_manager.models), inline=True)
+    embed.add_field(name="總模型數", value=len(CONFIG['trading_pairs']) * len(CONFIG['timeframes']), inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name="reload")
+async def cmd_reload(ctx):
+    """重新載入所有模型"""
+    await ctx.send("🔄 正在重新載入模型...")
+    model_manager.models.clear()
+    model_manager.download_all_models()
+    for pair in CONFIG['trading_pairs']:
+        for timeframe in CONFIG['timeframes']:
+            model = model_manager.load_model(pair, timeframe)
+            if model:
+                model_manager.models[f"{pair}_{timeframe}"] = model
+    await ctx.send(f"✅ 已載入 {len(model_manager.models)} 個模型")
+
+# ===== 啟動 Bot =====
+
+def main():
     logger.info("🚀 Starting Discord Bot...")
-    bot.run(DISCORD_TOKEN)
+    logger.info(f"   Channel ID: {DISCORD_CHANNEL_ID}")
+    logger.info(f"   Repository: {HF_REPO_ID}")
+    
+    try:
+        bot.run(DISCORD_TOKEN)
+    except Exception as e:
+        logger.error(f"❌ Bot 啟動失敗: {str(e)}")
+        exit(1)
+
+if __name__ == "__main__":
+    main()
