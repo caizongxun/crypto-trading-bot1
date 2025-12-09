@@ -1,6 +1,7 @@
-# frontend/strategy.py
+# backend/strategy.py
 # 特徵工程 (Feature Engineering) - 使用 pandas 計算技術指標
 # 不依賴 pandas-ta，避免相容性問題
+# 與 frontend/strategy.py 完全相同，確保訓練和推論一致
 
 import pandas as pd
 import numpy as np

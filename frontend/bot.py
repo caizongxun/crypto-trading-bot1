@@ -307,7 +307,7 @@ class DataFetcher:
     def _fetch_binance_data(pair, timeframe, n_bars):
         try:
             import ccxt
-            exchange = ccxt.binance()
+            exchange = ccxt.binanceus()
             
             # 轉換時間框架字串
             tf_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
