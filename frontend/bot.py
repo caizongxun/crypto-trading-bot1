@@ -604,7 +604,7 @@ async def cmd_set_signal_type(ctx, signal_type: str):
     SIGNAL_CONFIG['signal_type'] = signal_type.lower()
     await ctx.send(f"✅ Signal Type set to '{signal_type.lower()}'")
 
-@bot.command(name="help")
+@bot.command(name="commands")
 async def cmd_help(ctx):
     """顯示所有可用指令"""
     embed = discord.Embed(title="📖 Bot Commands", color=discord.Color.purple())
