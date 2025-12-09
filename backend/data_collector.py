@@ -9,7 +9,12 @@ from googleapiclient.http import MediaFileUpload
 
 # ===== 設定區 (請修改這裡) =====
 SCOPES = ['https://www.googleapis.com/auth/drive']
-SERVICE_ACCOUNT_FILE = '../service_account.json'  # 指向上一層目錄的 json
+# 取得腳本所在的目錄 (backend/)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 指向專案根目錄 (backend 的上一層)
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# 組合出 json 的完整路徑
+SERVICE_ACCOUNT_FILE = os.path.join(PROJECT_ROOT, 'service_account.json') # 指向上一層目錄的 json
 DRIVE_FOLDER_ID = '1A4Fqe5wNN26CytRihxjgjJQNgM4__fro'  # <--- 這裡要改！！
 
 # 想要抓取的標的
