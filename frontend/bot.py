@@ -23,6 +23,7 @@ from sklearn.preprocessing import StandardScaler
 
 # 导入你的 strategy.py
 import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 try:
     from strategy import TradingStrategy, TargetGenerator
@@ -66,12 +67,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ===== 配置 - 根據你的 trainer_av.py 更新 =====
 CONFIG = {
+    # 更新為你訓練的交易對（與 trainer_av.py 一致）
     "trading_pairs": [
-        # 原本的 10 個加密貨幣（完全保留）
-        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-        "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT", "MATIC/USDT",
-        # 額外加上的美股（對應你新訓練的模型）
-        "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META", "BTC-USD",
+        "AAPL",  # 美股
+        "GOOGL",
+        "MSFT",
+        "AMZN",
+        "TSLA",
+        "NVDA",
+        "META",
+        "BTC-USD",  # 加密
     ],
     "timeframes": ["15m", "1h", "4h"],
     "model_dir": "./models",
@@ -87,6 +92,7 @@ SIGNAL_CONFIG = {
     "signal_type": "buy",  # "buy", "sell", 或 "both"
 }
 
+
 # ===== 模型管理 =====
 class ModelManager:
     def __init__(self):
@@ -99,7 +105,7 @@ class ModelManager:
         """生成模型文件名"""
         pair_clean = pair.replace('/', '_').replace('^', '').replace('=', '_').replace('-', '_')
         return f"model_{pair_clean}_{timeframe}.pkl"
-    
+
     def get_scaler_filename(self, pair, timeframe):
         """生成 scaler 文件名"""
         pair_clean = pair.replace('/', '_').replace('^', '').replace('=', '_').replace('-', '_')
@@ -121,7 +127,7 @@ class ModelManager:
             for timeframe in CONFIG["timeframes"]:
                 model_filename = self.get_model_filename(pair, timeframe)
                 scaler_filename = self.get_scaler_filename(pair, timeframe)
-                
+
                 model_path = os.path.join(self.model_dir, model_filename)
                 scaler_path = os.path.join(self.model_dir, scaler_filename)
 
@@ -135,7 +141,7 @@ class ModelManager:
                             local_dir=self.model_dir,
                             token=CONFIG["hf_token"]
                         )
-                    
+
                     # 下載 scaler
                     if not os.path.exists(scaler_path):
                         logger.info(f"📥 下載 scaler：{pair} {timeframe}...")
@@ -145,7 +151,7 @@ class ModelManager:
                             local_dir=self.model_dir,
                             token=CONFIG["hf_token"]
                         )
-                    
+
                     logger.info(f"✅ 下載完成：{pair} {timeframe}")
                     downloaded += 1
 
@@ -159,7 +165,7 @@ class ModelManager:
         """載入模型和 scaler"""
         model_filename = self.get_model_filename(pair, timeframe)
         scaler_filename = self.get_scaler_filename(pair, timeframe)
-        
+
         model_path = os.path.join(self.model_dir, model_filename)
         scaler_path = os.path.join(self.model_dir, scaler_filename)
 
@@ -170,12 +176,12 @@ class ModelManager:
         try:
             with open(model_path, 'rb') as f:
                 model = pickle.load(f)
-            
+
             scaler = None
             if os.path.exists(scaler_path):
                 with open(scaler_path, 'rb') as f:
                     scaler = pickle.load(f)
-            
+
             logger.info(f"✅ 模型已載入：{pair} {timeframe}")
             return model, scaler
 
@@ -183,26 +189,27 @@ class ModelManager:
             logger.error(f"❌ 載入模型失敗 {pair} {timeframe}: {str(e)}")
             return None, None
 
+
 # ===== 交易信號邏輯 =====
 class SignalGenerator:
     def __init__(self):
         self.strategy = TradingStrategy()
-    
+
     def generate_signal(self, pair, timeframe, model, scaler, historical_data_df):
         """
         生成交易信號
-        
+
         Args:
             pair: 交易對 (如 "BTC-USD")
             timeframe: 時間框架 (如 "1h")
             model: 訓練的 RandomForest 模型
             scaler: 標準化器 (StandardScaler)
             historical_data_df: 歷史數據 DataFrame (包含 open, high, low, close, volume)
-        
+
         Returns:
             signal dict with action, confidence, etc.
         """
-        
+
         if model is None:
             logger.warning(f"⚠️ No model available for {pair} {timeframe}")
             return {
@@ -213,7 +220,7 @@ class SignalGenerator:
                 "reason": "No model available",
                 "timestamp": datetime.now().isoformat()
             }
-        
+
         try:
             # 計算特徵
             if len(historical_data_df) < SIGNAL_CONFIG["min_samples"]:
@@ -225,9 +232,9 @@ class SignalGenerator:
                     "reason": f"Insufficient data ({len(historical_data_df)} < {SIGNAL_CONFIG['min_samples']})",
                     "timestamp": datetime.now().isoformat()
                 }
-            
+
             features_df = self.strategy.calculate_features(historical_data_df)
-            
+
             if len(features_df) == 0:
                 return {
                     "pair": pair,
@@ -237,25 +244,25 @@ class SignalGenerator:
                     "reason": "Feature calculation failed",
                     "timestamp": datetime.now().isoformat()
                 }
-            
+
             # 取最後一行數據
             feature_columns = self.strategy.get_feature_columns()
             latest_features = features_df[feature_columns].iloc[-1].values.reshape(1, -1)
-            
+
             # 標準化特徵
             if scaler is not None:
                 latest_features = scaler.transform(latest_features)
-            
+
             # 模型預測
             prediction = model.predict(latest_features)[0]  # 0, 1, -1
-            
+
             # 獲取預測概率（如果可用）
             if hasattr(model, 'predict_proba'):
                 probas = model.predict_proba(latest_features)[0]
                 confidence = np.max(probas)
             else:
                 confidence = 0.5
-            
+
             # 決定是否發送信號
             action = "HOLD"
             if prediction == 1 and confidence >= SIGNAL_CONFIG["model_confidence_threshold"]:
@@ -264,9 +271,9 @@ class SignalGenerator:
             elif prediction == -1 and confidence >= SIGNAL_CONFIG["model_confidence_threshold"]:
                 if SIGNAL_CONFIG["signal_type"] in ["sell", "both"]:
                     action = "SELL"
-            
+
             current_price = historical_data_df['close'].iloc[-1]
-            
+
             return {
                 "pair": pair,
                 "timeframe": timeframe,
@@ -277,7 +284,7 @@ class SignalGenerator:
                 "reason": "Model prediction",
                 "timestamp": datetime.now().isoformat()
             }
-        
+
         except Exception as e:
             logger.error(f"❌ Signal generation error for {pair} {timeframe}: {str(e)}")
             return {
@@ -289,24 +296,25 @@ class SignalGenerator:
                 "timestamp": datetime.now().isoformat()
             }
 
+
 # ===== 數據獲取（模擬/真實） =====
 class DataFetcher:
     """獲取歷史數據用於特徵計算"""
-    
+
     @staticmethod
     def get_sample_data(pair, timeframe, n_bars=200):
         """
         獲取樣本數據進行特徵計算
-        
+
         在實際應用中，這裡應該連接到真實的數據源
         （如 Alpha Vantage, yfinance, Binance API 等）
-        
+
         目前返回模擬數據以供測試
         """
         try:
             # 嘗試使用 yfinance 獲取真實數據
             import yfinance as yf
-            
+
             # 根據不同交易對選擇時間範圍
             if timeframe == "15m":
                 period = "5d"
@@ -317,35 +325,39 @@ class DataFetcher:
             else:  # 4h
                 period = "730d"
                 interval = "1d"
-            
+
             # yfinance 可能不支持所有交易對，特別是美股需要特定格式
             ticker = pair
             if pair == "BTC-USD":
                 ticker = "BTC-USD"
-            
+
             df = yf.download(ticker, period=period, interval=interval, progress=False)
-            
+
             if len(df) < SIGNAL_CONFIG["min_samples"]:
                 logger.warning(f"⚠️ yfinance 數據不足 {pair}")
                 return DataFetcher._generate_dummy_data(n_bars)
-            
+
             # 確保列名正確
-            df.columns = ['open', 'high', 'low', 'close', 'volume', 'Adj Close'] if len(df.columns) > 5 else ['open', 'high', 'low', 'close', 'volume']
+            df.columns = ['open', 'high', 'low', 'close', 'volume', 'Adj Close'] if len(df.columns) > 5 else ['open',
+                                                                                                              'high',
+                                                                                                              'low',
+                                                                                                              'close',
+                                                                                                              'volume']
             df = df[['open', 'high', 'low', 'close', 'volume']].tail(n_bars)
             df = df.reset_index(drop=True)
-            
+
             return df
-        
+
         except Exception as e:
             logger.warning(f"⚠️ Failed to fetch real data for {pair}: {str(e)[:50]}")
             return DataFetcher._generate_dummy_data(n_bars)
-    
+
     @staticmethod
     def _generate_dummy_data(n_bars=200):
         """生成模擬數據用於測試"""
         np.random.seed(42)
         prices = np.cumsum(np.random.randn(n_bars)) + 100
-        
+
         data = {
             'open': prices - np.abs(np.random.randn(n_bars)) * 2,
             'high': prices + np.abs(np.random.randn(n_bars)) * 2,
@@ -353,8 +365,9 @@ class DataFetcher:
             'close': prices,
             'volume': np.random.randint(1000000, 10000000, n_bars),
         }
-        
+
         return pd.DataFrame(data)
+
 
 # ===== 全局管理器 =====
 model_manager = ModelManager()
@@ -364,9 +377,11 @@ data_fetcher = DataFetcher()
 # ===== Flask Server =====
 app = Flask(__name__)
 
+
 @app.route('/health', methods=['GET'])
 def health():
     return {'status': 'ok', 'bot': 'running'}, 200
+
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -377,9 +392,11 @@ def status():
         'timestamp': datetime.now().isoformat()
     }, 200
 
+
 def run_flask():
     """在後台運行 Flask"""
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
 
 # ===== Discord Bot 事件 =====
 @bot.event
@@ -401,14 +418,14 @@ async def on_ready():
     if not model_manager.models:
         logger.info("📦 First check: downloading all models...")
         model_manager.download_all_models()
-        
+
         for pair in CONFIG['trading_pairs']:
             for timeframe in CONFIG['timeframes']:
                 model, scaler = model_manager.load_model(pair, timeframe)
                 if model:
                     model_manager.models[f"{pair}_{timeframe}"] = model
                     model_manager.scalers[f"{pair}_{timeframe}"] = scaler
-        
+
         logger.info(f"✅ Model initialization completed - {len(model_manager.models)} models loaded")
 
     # 啟動交易循環
@@ -416,10 +433,12 @@ async def on_ready():
         trading_loop.start()
         logger.info("✅ Trading loop started")
 
+
 @bot.event
 async def on_error(event, *args, **kwargs):
     """錯誤處理"""
     logger.error(f"❌ Error in {event}: {args}, {kwargs}")
+
 
 # ===== 交易循環 =====
 @tasks.loop(minutes=15)
@@ -439,13 +458,13 @@ async def trading_loop():
                 model_key = f"{pair}_{timeframe}"
                 model = model_manager.models.get(model_key)
                 scaler = model_manager.scalers.get(model_key)
-                
+
                 # 獲取歷史數據
                 df = data_fetcher.get_sample_data(pair, timeframe, n_bars=200)
-                
+
                 # 生成信號
                 signal = signal_generator.generate_signal(pair, timeframe, model, scaler, df)
-                
+
                 if signal["action"] != "HOLD":
                     await send_signal(channel, signal)
                     signals_found += 1
@@ -455,10 +474,12 @@ async def trading_loop():
     except Exception as e:
         logger.error(f"❌ Error in trading loop: {str(e)}")
 
+
 async def send_signal(channel, signal):
     """發送交易信號到 Discord"""
-    color = discord.Color.green() if signal['action'] == 'BUY' else (discord.Color.red() if signal['action'] == 'SELL' else discord.Color.gray())
-    
+    color = discord.Color.green() if signal['action'] == 'BUY' else (
+        discord.Color.red() if signal['action'] == 'SELL' else discord.Color.gray())
+
     embed = discord.Embed(
         title=f"🚀 {signal['action']} - {signal['pair']}",
         description=f"Timeframe: {signal['timeframe']}",
@@ -468,10 +489,10 @@ async def send_signal(channel, signal):
 
     embed.add_field(name="Action", value=signal['action'], inline=True)
     embed.add_field(name="Confidence", value=f"{signal['confidence']:.1%}", inline=True)
-    
+
     if 'current_price' in signal:
         embed.add_field(name="Current Price", value=f"${signal['current_price']:.2f}", inline=True)
-    
+
     embed.add_field(name="Reason", value=signal.get('reason', 'N/A'), inline=False)
     embed.add_field(name="Time", value=signal['timestamp'], inline=False)
 
@@ -481,17 +502,20 @@ async def send_signal(channel, signal):
     except Exception as e:
         logger.error(f"❌ Failed to send signal: {str(e)}")
 
+
 # ===== Discord 指令 =====
 @bot.command(name="status")
 async def cmd_status(ctx):
     """查看 Bot 狀態"""
     embed = discord.Embed(title="🤖 Bot Status", color=discord.Color.blue())
     embed.add_field(name="Status", value="✅ Running", inline=False)
-    embed.add_field(name="Trading Pairs", value=f"{len(CONFIG['trading_pairs'])}: {', '.join(CONFIG['trading_pairs'])}", inline=False)
+    embed.add_field(name="Trading Pairs", value=f"{len(CONFIG['trading_pairs'])}: {', '.join(CONFIG['trading_pairs'])}",
+                    inline=False)
     embed.add_field(name="Timeframes", value=", ".join(CONFIG['timeframes']), inline=False)
     embed.add_field(name="Models Loaded", value=len(model_manager.models), inline=True)
     embed.add_field(name="Total Models", value=len(CONFIG['trading_pairs']) * len(CONFIG['timeframes']), inline=True)
     await ctx.send(embed=embed)
+
 
 @bot.command(name="reload")
 async def cmd_reload(ctx):
@@ -500,20 +524,21 @@ async def cmd_reload(ctx):
     model_manager.models.clear()
     model_manager.scalers.clear()
     model_manager.download_all_models()
-    
+
     for pair in CONFIG['trading_pairs']:
         for timeframe in CONFIG['timeframes']:
             model, scaler = model_manager.load_model(pair, timeframe)
             if model:
                 model_manager.models[f"{pair}_{timeframe}"] = model
                 model_manager.scalers[f"{pair}_{timeframe}"] = scaler
-    
+
     await ctx.send(f"✅ Loaded {len(model_manager.models)} models")
+
 
 @bot.command(name="signal")
 async def cmd_signal(ctx, pair=None, timeframe=None):
     """查看特定交易對的交易信號
-    
+
     使用方法: !signal <交易對> <時間框架>
     例如: !signal BTC-USD 1h
     """
@@ -522,90 +547,96 @@ async def cmd_signal(ctx, pair=None, timeframe=None):
         tf_str = ", ".join(CONFIG['timeframes'])
         await ctx.send(f"用法: !signal <交易對> <時間框架>\n\n可用交易對: {pairs_str}\n可用時間框架: {tf_str}")
         return
-    
+
     model_key = f"{pair}_{timeframe}"
-    
+
     if model_key not in model_manager.models:
         await ctx.send(f"❌ Model not found: {pair} {timeframe}")
         return
-    
+
     model = model_manager.models[model_key]
     scaler = model_manager.scalers.get(model_key)
-    
+
     # 獲取數據
     df = data_fetcher.get_sample_data(pair, timeframe, n_bars=200)
-    
+
     # 生成信號
     signal = signal_generator.generate_signal(pair, timeframe, model, scaler, df)
-    
+
     await send_signal(ctx.channel, signal)
+
 
 @bot.command(name="signals")
 async def cmd_signals(ctx):
     """查看所有交易對的信號"""
     await ctx.send("🔍 Checking all signals...\n")
-    
+
     count = 0
     for pair in CONFIG['trading_pairs']:
         for timeframe in CONFIG['timeframes']:
             model_key = f"{pair}_{timeframe}"
             model = model_manager.models.get(model_key)
             scaler = model_manager.scalers.get(model_key)
-            
+
             if not model:
                 continue
-            
+
             df = data_fetcher.get_sample_data(pair, timeframe, n_bars=200)
             signal = signal_generator.generate_signal(pair, timeframe, model, scaler, df)
-            
+
             if signal["action"] != "HOLD":
                 await send_signal(ctx.channel, signal)
                 count += 1
-    
+
     if count == 0:
         await ctx.send("❌ No signals found")
+
 
 @bot.command(name="config")
 async def cmd_config(ctx):
     """查看交易信號配置"""
     embed = discord.Embed(title="⚙️ Signal Configuration", color=discord.Color.orange())
-    embed.add_field(name="Model Confidence Threshold", value=f"{SIGNAL_CONFIG['model_confidence_threshold']:.2%}", inline=True)
+    embed.add_field(name="Model Confidence Threshold", value=f"{SIGNAL_CONFIG['model_confidence_threshold']:.2%}",
+                    inline=True)
     embed.add_field(name="Signal Type", value=SIGNAL_CONFIG['signal_type'], inline=True)
     embed.add_field(name="Min Samples", value=SIGNAL_CONFIG['min_samples'], inline=True)
     await ctx.send(embed=embed)
 
+
 @bot.command(name="set_threshold")
 async def cmd_set_threshold(ctx, threshold: float):
     """設定模型信心度閾值 (0-1)
-    
+
     例如: !set_threshold 0.55
     """
     if not (0 <= threshold <= 1):
         await ctx.send("❌ Threshold must be between 0 and 1")
         return
-    
+
     SIGNAL_CONFIG['model_confidence_threshold'] = threshold
     await ctx.send(f"✅ Model Confidence Threshold set to {threshold:.2%}")
+
 
 @bot.command(name="set_signal_type")
 async def cmd_set_signal_type(ctx, signal_type: str):
     """設定信號類型
-    
+
     buy = 只發送 BUY 信號
     sell = 只發送 SELL 信號
     both = 發送 BUY 和 SELL 信號
-    
+
     例如: !set_signal_type both
     """
     if signal_type.lower() not in ["buy", "sell", "both"]:
         await ctx.send("❌ Signal type must be 'buy', 'sell', or 'both'")
         return
-    
+
     SIGNAL_CONFIG['signal_type'] = signal_type.lower()
     await ctx.send(f"✅ Signal Type set to '{signal_type.lower()}'")
 
+
 @bot.command(name="commands")
-async def cmd_help(ctx):
+async def cmd_commands(ctx):
     """顯示所有可用指令"""
     embed = discord.Embed(title="📖 Bot Commands", color=discord.Color.purple())
     embed.add_field(name="!status", value="查看 Bot 運行狀態", inline=False)
@@ -615,8 +646,9 @@ async def cmd_help(ctx):
     embed.add_field(name="!set_threshold <0-1>", value="設定模型信心度閾值", inline=False)
     embed.add_field(name="!set_signal_type <buy/sell/both>", value="設定信號類型", inline=False)
     embed.add_field(name="!reload", value="重新載入所有模型", inline=False)
-    embed.add_field(name="!help", value="顯示此幫助信息", inline=False)
+    embed.add_field(name="!commands", value="顯示此幫助信息", inline=False)
     await ctx.send(embed=embed)
+
 
 # ===== 啟動 Bot =====
 def main():
@@ -630,6 +662,7 @@ def main():
     except Exception as e:
         logger.error(f"❌ Bot startup failed: {str(e)}")
         exit(1)
+
 
 if __name__ == "__main__":
     main()
