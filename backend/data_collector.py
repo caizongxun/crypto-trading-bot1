@@ -1,21 +1,18 @@
+# backend/data_collector.py
 import os
-import json
+import shutil
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from huggingface_hub import HfApi
+from dotenv import load_dotenv
 
-# ===== 設定區 (請修改這裡) =====
-SCOPES = ['https://www.googleapis.com/auth/drive']
-# 取得腳本所在的目錄 (backend/)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 指向專案根目錄 (backend 的上一層)
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
-# 組合出 json 的完整路徑
-SERVICE_ACCOUNT_FILE = os.path.join(PROJECT_ROOT, 'service_account.json') # 指向上一層目錄的 json
-DRIVE_FOLDER_ID = '1A4Fqe5wNN26CytRihxjgjJQNgM4__fro'  # <--- 這裡要改！！
+# 載入環境變數
+load_dotenv()
+
+# ===== 設定區 =====
+HF_DATA_REPO = "zongowo111/crypto-data"  # <--- 請確認這裡跟你在 HF 建立的名字一樣
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 # 想要抓取的標的
 PAIRS = [
@@ -23,97 +20,76 @@ PAIRS = [
     "ADA-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "MATIC-USD",
     "AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "NVDA", "META"
 ]
-INTERVAL = "15m"  # 收集 15分K
-LOOKBACK = "5d"  # 每次抓最近 5 天
+
+INTERVAL = "15m"  # 15分K
+LOOKBACK = "5d"  # 抓最近 5 天 (覆蓋舊的保證數據連續)
+TEMP_DIR = "temp_crypto_data"  # 暫存資料夾名稱
 
 
-def authenticate_gdrive():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    service = build('drive', 'v3', credentials=creds)
-    return service
-
-
-def fetch_data():
-    all_data = {}
+def fetch_and_upload():
     print(f"\n🔄 [{datetime.now()}] 開始抓取數據...")
 
+    # 1. 建立乾淨的暫存資料夾
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+    os.makedirs(TEMP_DIR)
+
+    file_count = 0
+
+    # 2. 抓取所有幣種數據
     for pair in PAIRS:
         try:
-            # 下載數據
+            # yfinance 下載
             df = yf.download(pair, period=LOOKBACK, interval=INTERVAL, progress=False, auto_adjust=False)
 
             if len(df) > 0:
-                # 清理格式
+                # 簡單清理格式
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 df.columns = [str(c).lower() for c in df.columns]
                 df.reset_index(inplace=True)
 
-                # 暫存檔名
+                # 存入暫存資料夾
                 filename = f"{pair.replace('-', '_')}_{INTERVAL}.csv"
-                df.to_csv(filename, index=False)
-                all_data[pair] = filename
-                print(f"  ✅ {pair}: {len(df)} 筆")
+                filepath = os.path.join(TEMP_DIR, filename)
+                df.to_csv(filepath, index=False)
+
+                file_count += 1
+                print(f"  ✅ {pair}: {len(df)} 筆 -> {filename}")
             else:
                 print(f"  ⚠️ {pair}: 無數據")
 
         except Exception as e:
             print(f"  ❌ {pair} 失敗: {e}")
 
-    return all_data
-
-
-def upload_to_drive(service, file_map):
-    print("\n☁️ 正在上傳到 Google Drive...")
-
-    # 檢查雲端已有的檔案
-    results = service.files().list(
-        q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name)").execute()
-    existing_files = {f['name']: f['id'] for f in results.get('files', [])}
-
-    for pair, filename in file_map.items():
-        file_metadata = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
-        media = MediaFileUpload(filename, mimetype='text/csv')
-
+    # 3. 一次性批量上傳 (Bulk Upload)
+    if file_count > 0:
+        print(f"\n☁️ 準備上傳 {file_count} 個檔案到 Hugging Face Dataset...")
         try:
-            if filename in existing_files:
-                # 更新
-                file_id = existing_files[filename]
-                service.files().update(
-                    fileId=file_id,
-                    media_body=media
-                ).execute()
-                print(f"  🔄 更新: {filename}")
-            else:
-                # 新增
-                service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id'
-                ).execute()
-                print(f"  ➕ 新增: {filename}")
+            api = HfApi(token=HF_TOKEN)
+
+            api.upload_folder(
+                folder_path=TEMP_DIR,  # 上傳整個資料夾
+                repo_id=HF_DATA_REPO,
+                repo_type="dataset",  # 指定是 dataset
+                path_in_repo=".",  # 放在 repo 根目錄
+                commit_message=f"Auto-update data {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            print("🎉 上傳成功！(Single Commit)")
+
         except Exception as e:
-            print(f"  ❌ 上傳失敗 {filename}: {e}")
-        finally:
-            # 刪除本地暫存檔
-            if os.path.exists(filename):
-                os.remove(filename)
+            print(f"❌ 上傳失敗: {e}")
+    else:
+        print("⚠️ 沒有數據被抓取，跳過上傳。")
+
+    # 4. 清理殘留檔案
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+        print("🧹 暫存檔已清理")
 
 
 if __name__ == "__main__":
-    # 檢查 json 是否存在
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"❌ 錯誤: 找不到 {SERVICE_ACCOUNT_FILE}，請確認檔案位置。")
-        exit(1)
-
-    data_files = fetch_data()
-
-    if data_files:
-        try:
-            drive_service = authenticate_gdrive()
-            upload_to_drive(drive_service, data_files)
-            print("\n🎉 全部完成！")
-        except Exception as e:
-            print(f"❌ Drive 連線失敗: {e}")
+    if not HF_TOKEN:
+        print("❌ 錯誤: 未找到 HF_TOKEN，請檢查 .env 檔案。")
+    else:
+        fetch_and_upload()
