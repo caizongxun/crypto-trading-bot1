@@ -1,0 +1,146 @@
+[
+  {
+    "pair": "EURUSD",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "EURUSD",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "EURUSD",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "^GSPC",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "^GSPC",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "^GSPC",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "KO",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "KO",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "KO",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAUUSD=X",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAUUSD=X",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAUUSD=X",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "AMZN",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "AMZN",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "AMZN",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "SBUX",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "SBUX",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "SBUX",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAGUSD=X",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAGUSD=X",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "XAGUSD=X",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "CC=F",
+    "timeframe": "15m",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "CC=F",
+    "timeframe": "1h",
+    "success": false,
+    "error": "Insufficient data"
+  },
+  {
+    "pair": "CC=F",
+    "timeframe": "4h",
+    "success": false,
+    "error": "Insufficient data"
+  }
+]
