@@ -133,9 +133,23 @@ class CryptoBot(discord.Client):
         try:
             # --- 1. 數據抓取 ---
             # 轉換 ticker 格式給 yfinance
-            yf_ticker = pair.replace('/', '-').replace('USDT', '-USD')
-            if 'USDT' in yf_ticker: yf_ticker = yf_ticker.replace('USDT', 'USD')
-            if yf_ticker.endswith('-'): yf_ticker = yf_ticker[:-1]
+            # --- 1. 數據抓取 ---
+            # 轉換 ticker 格式給 yfinance
+            yf_ticker = pair
+
+            # 如果是加密貨幣對 (含 / )
+            if '/' in yf_ticker:
+                yf_ticker = yf_ticker.replace('/', '-')
+
+            # 處理 USDT -> USD (避免重複加減號)
+            if 'USDT' in yf_ticker:
+                if '-' in yf_ticker:
+                    yf_ticker = yf_ticker.replace('USDT', 'USD')  # 例如 BTC-USDT -> BTC-USD
+                else:
+                    yf_ticker = yf_ticker.replace('USDT', '-USD')  # 例如 BTCUSDT -> BTC-USD
+
+            # 防呆：如果不小心變成了 BTC--USD，修回來
+            yf_ticker = yf_ticker.replace('--', '-')
 
             df = yf.download(
                 yf_ticker, period="5d", interval=timeframe, 
